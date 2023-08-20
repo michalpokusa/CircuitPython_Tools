@@ -15,14 +15,32 @@ class IDGenerator:
 
 
 class _Task:
+    _id_generator = IDGenerator()
     id: int
-    id_generator = IDGenerator()
 
     function: Callable
     args: list
     kwargs: dict
 
+    priority: int
+
     eta: float
+
+    def __init__(
+        self,
+        function: Callable,
+        args: list = None,
+        kwargs: dict = None,
+        priority: int = 0,
+    ) -> None:
+        self.id = self._id_generator()
+
+        self.function = function
+        self.args = args or []
+        self.kwargs = kwargs or {}
+        self.priority = priority
+
+        self.time_created = monotonic()
 
     @property
     def ready(self):
@@ -64,15 +82,11 @@ class Timeout(_Task):
         timeout: float,
         args: list = None,
         kwargs: dict = None,
+        priority: int = 0,
     ):
-        self.id = self.id_generator()
+        super().__init__(function, args, kwargs, priority=priority)
 
-        self.function = function
         self.timeout = timeout
-        self.args = args or []
-        self.kwargs = kwargs or {}
-
-        self.time_created = monotonic()
 
     @property
     def eta(self):
@@ -91,20 +105,17 @@ class Interval(_Task):
         interval: float,
         args: list = None,
         kwargs: dict = None,
+        priority: int = 0,
         *,
         include_execution_time: bool = True,
         execute_immediately: bool = False,
     ):
-        self.id = self.id_generator()
+        super().__init__(function, args, kwargs, priority=priority)
 
-        self.function = function
         self.interval = interval
-        self.args = args or []
-        self.kwargs = kwargs or {}
 
         self.include_execution_time = include_execution_time
 
-        self.time_created = monotonic()
         self.time_last_executed = None if execute_immediately else self.time_created
 
     @property
