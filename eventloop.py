@@ -369,13 +369,16 @@ class EventLoop:
 
         self.tasks = [task for task in self.tasks if not task.completed]
 
-    def loop_forever(self, limit: int = None, delay: float = None):
+    def loop_forever(
+        self, limit: int = None, delay: float = None, raise_errors: bool = True
+    ):
         """
         Loops forever, running pending tasks and scheduling new ones
 
         Args:
             limit: Number of tasks to run in each loop between scheduling new ones
             delay: Delay between each loop
+            raise_errors: Whether to raise errors or not
         """
         while True:
             try:
@@ -384,6 +387,9 @@ class EventLoop:
                     sleep(delay)
             except KeyboardInterrupt:
                 break
+            except Exception as error:
+                if raise_errors:
+                    raise error
 
     def __repr__(self) -> str:
         return "EventLoop(tasks={}, schedules={})".format(self.tasks, self.schedules)
