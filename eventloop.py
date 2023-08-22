@@ -14,7 +14,7 @@ class IDGenerator:
         return self.id
 
 
-class _Task:
+class Task:
     _id_generator = IDGenerator()
     id: int
 
@@ -24,7 +24,99 @@ class _Task:
 
     priority: int
 
+    event_loop: "EventLoop | None" = None
+    _current_call: "Generator | None" = None
+
+    def __init__(
+        self,
+        function: Callable,
+        args: list = None,
+        kwargs: dict = None,
+        *,
+        priority: int = 0,
+    ) -> None:
+        self.id = self._id_generator()
+
+        self.function = function
+        self.args = args or []
+        self.kwargs = kwargs or {}
+
+        self.priority = priority
+
+        self.time_created = monotonic()
+        self.time_started = None
+        self.time_completed = None
+
+        self.started = False
+        self.completed = False
+
+    def call(self):
+        """
+        Calls a `function` with given `args` and `kwargs`, pauses on first yield if `function`
+        is a generator
+        """
+
+        # Function call is already in progress
+        if self._current_call is not None:
+            try:
+                # In progess, continue until next yield
+                next(self._current_call)
+            except StopIteration:
+                # Completed
+                self._current_call = None
+                self.completed = True
+                self.time_completed = monotonic()
+            finally:
+                return
+
+        # Function call is not in progress, start it
+        self.started = True
+        self.time_started = monotonic()
+        call = self.function(*self.args, **self.kwargs)
+
+        # Function is a generator, call will be handled in fragments
+        if hasattr(call, "__next__"):
+            self._current_call = call
+            self.call()
+        # Function is not a generator, call is completed
+        else:
+            self.completed = True
+            self.time_completed = monotonic()
+
+    def __eq__(self, value: "Task") -> bool:
+        if not isinstance(value, Task):
+            raise ValueError(f"Cannot compare {type(self)} with {type(value)}")
+
+        return (
+            self.priority == value.priority and self.time_created == value.time_created
+        )
+
+    def __gt__(self, other: "Task"):
+        if not isinstance(other, Task):
+            raise ValueError(f"Cannot compare {type(self)} with {type(other)}")
+
+        if self.priority == other.priority:
+            return self.time_created < other.time_created
+
+        return other.priority < self.priority
+
+    def __repr__(self) -> str:
+        return "Task(id={}, priority={}, function={}, args={}, kwargs={}, time_created={})".format(
+            self.id,
+            self.priority,
+            self.function,
+            self.args,
+            self.kwargs,
+            self.time_created,
+        )
+
+
+class _Schedule:
+    _id_generator = IDGenerator()
+    id: int
+
     eta: float
+    ready: bool
 
     def __init__(
         self,
@@ -32,8 +124,8 @@ class _Task:
         args: list = None,
         kwargs: dict = None,
         priority: int = 0,
-    ) -> None:
-        self.id = self._id_generator()
+    ):
+        self.id = _Schedule._id_generator()
 
         self.function = function
         self.args = args or []
@@ -43,39 +135,11 @@ class _Task:
         self.time_created = monotonic()
 
     @property
-    def ready(self):
-        return self._current_execution is not None or self.eta == 0
-
-    _current_execution: "Generator | None" = None
-
-    def execute(self) -> "tuple[bool, bool]":
-        """
-        Returns:
-            started, completed: Indication if function execution started or/and completed on this call
-        """
-
-        # Function execution is already in progress
-        if self._current_execution is not None:
-            try:
-                next(self._current_execution)
-                return False, False  # Not started nor completed, because is in progress
-            except StopIteration:
-                self._current_execution = None
-                return False, True  # Not started but completed
-
-        # Function execution is not in progress, start it
-        execution = self.function(*self.args, **self.kwargs)
-
-        # Function is a generator, execution will be handled in fragments
-        if hasattr(execution, "__next__"):
-            self._current_execution = execution
-            _, completed = self.execute()
-            return True, completed  # Started and maybe completed
-        else:
-            return True, True  # Started and completed
+    def task(self) -> Task:
+        return Task(self.function, self.args, self.kwargs, priority=self.priority)
 
 
-class Timeout(_Task):
+class Timeout(_Schedule):
     def __init__(
         self,
         function: Callable,
@@ -85,20 +149,23 @@ class Timeout(_Task):
         priority: int = 0,
     ):
         super().__init__(function, args, kwargs, priority=priority)
-
         self.timeout = timeout
 
     @property
     def eta(self):
         return max(0, self.time_created + self.timeout - monotonic())
 
+    @property
+    def ready(self):
+        return self.eta == 0
+
     def __repr__(self) -> str:
-        return "Timeout(id={}, function={}, timeout={}, args={}, kwargs={})".format(
-            self.id, self.function, self.eta, self.args, self.kwargs
+        return "Timeout(id={}, eta={}, timeout={}, function={}, args={}, kwargs={})".format(
+            self.id, self.eta, self.timeout, self.function, self.args, self.kwargs
         )
 
 
-class Interval(_Task):
+class Interval(_Schedule):
     def __init__(
         self,
         function: Callable,
@@ -107,33 +174,41 @@ class Interval(_Task):
         kwargs: dict = None,
         priority: int = 0,
         *,
-        include_execution_time: bool = True,
-        execute_immediately: bool = False,
+        blocking: bool = False,
+        immediate: bool = False,
     ):
         super().__init__(function, args, kwargs, priority=priority)
 
         self.interval = interval
-
-        self.include_execution_time = include_execution_time
-
-        self.time_last_executed = None if execute_immediately else self.time_created
+        self.blocking = blocking
+        self._blocking_task: "Task | None" = None
+        self.time_last_called = None if immediate else self.time_created
 
     @property
     def eta(self):
-        return max(0, (self.time_last_executed or 0) + self.interval - monotonic())
+        return max(0, (self.time_last_called or 0) + self.interval - monotonic())
 
-    def execute(self):
-        time_before_executing = monotonic()
-        started, completed = super().execute()
+    @property
+    def ready(self):
+        if self.blocking and self._blocking_task:
+            if not self._blocking_task.completed:
+                return False
+            self.time_last_called = self._blocking_task.time_completed
+            self._blocking_task = None
 
-        if started if self.include_execution_time else completed:
-            self.time_last_executed = time_before_executing
+        return self.eta == 0
 
-        return started, completed
+    @property
+    def task(self) -> Task:
+        self.time_last_called = monotonic()
+        _task = super().task
+        if self.blocking:
+            self._blocking_task = _task
+        return _task
 
     def __repr__(self) -> str:
-        return "Interval(id={}, function={}, interval={}, args={}, kwargs={})".format(
-            self.id, self.function, self.eta, self.args, self.kwargs
+        return "Interval(id={}, eta={}, interval={}, function={}, args={}, kwargs={})".format(
+            self.id, self.eta, self.interval, self.function, self.args, self.kwargs
         )
 
 
@@ -142,46 +217,84 @@ class EventLoop:
     Class for managing tasks and executing them after timeout or in interval.
     Allows running multiple functions in "parallel", without using threads.
 
-    Enables pausing execution of function and resuming it at later time, after processing
+    Enables pausing function call and resuming it at later time, after processing
     other tasks.
     """
 
     def __init__(self):
-        self.tasks: "list[Timeout | Interval]" = []
+        self.tasks: "list[Task]" = []
+        self.schedules: "list[_Schedule]" = []
 
-    def add(self, *tasks: "Timeout | Interval") -> "list[int]":
+    def add_task(
+        self,
+        function: Callable,
+        *,
+        args: list = None,
+        kwargs: dict = None,
+        priority: int = 0,
+    ) -> Task:
         """
-        Add tasks to event loop
+        Add task to event loop
 
         Args:
-            tasks: Tasks to add
-
-        Returns:
-            List of ids of added tasks
+            function: Function to execute
+            args: Positional arguments to pass to function
+            kwargs: Keyword arguments to pass to function
+            priority: Priority of task
         """
-        # Check if all tasks are instances of Event class
-        for task in tasks:
-            if not isinstance(task, (Timeout, Interval)):
-                raise ValueError(f"Invalid task type: {type(task)}")
 
-        # Add tasks to loop
-        self.tasks.extend(tasks)
+        _task = Task(function, args, kwargs, priority=priority)
+        _task.event_loop = self
 
-        # Return ids of tasks
-        return [task.id for task in tasks]
+        self.tasks.append(_task)
 
-    def timeout(self, timeout: float, *, args: list = None, kwargs: dict = None):
+        return _task
+
+    def add_timeout(
+        self,
+        function: Callable,
+        timeout: float,
+        *,
+        args: list = None,
+        kwargs: dict = None,
+        priority: int = 0,
+    ):
         """
-        Decorator for adding function to event loop as Timeout
+        Add timeout to event loop
+
+class EventLoop:
+    """
+    Class for managing tasks and executing them after timeout or in interval.
+    Allows running multiple functions in "parallel", without using threads.
+
+    Enables pausing function call and resuming it at later time, after processing
+    other tasks.
+    """
+
+    def __init__(self):
+        self.tasks: "list[Task]" = []
+        self.schedules: "list[_Schedule]" = []
+
+    def timeout(
+        self,
+        timeout: float,
+        *,
+        args: list = None,
+        kwargs: dict = None,
+        priority: int = 0,
+    ):
+        """
+        Decorator for adding function to event loop as timeout
 
         Args:
             timeout: Timeout in seconds
             args: Positional arguments to pass to function
             kwargs: Keyword arguments to pass to function
+            priority: Priority of task
         """
 
         def decorator(function: Callable):
-            self.add(Timeout(function, timeout, args, kwargs))
+            self.schedules.append(Timeout(function, timeout, args, kwargs, priority))
             return function
 
         return decorator
@@ -192,34 +305,48 @@ class EventLoop:
         *,
         args: list = None,
         kwargs: dict = None,
-        include_execution_time: bool = True,
-        execute_immediately: bool = False,
+        priority: int = 0,
+        blocking: bool = True,
+        immediate: bool = False,
     ):
         """
-        Decorator for adding function to event loop as Interval
+        Decorator for adding function to event loop as interval
 
         Args:
             interval: Interval in seconds
             args: Positional arguments to pass to function
             kwargs: Keyword arguments to pass to function
-            include_execution_time: Whether to include execution time in interval
-            execute_immediately: Whether to execute function immediately
+            priority: Priority of task
+            blocking: Whether to include call time in interval
+            immediate: Whether to call function immediately
         """
 
         def decorator(function: Callable):
-            self.add(
+            self.schedules.append(
                 Interval(
                     function,
                     interval,
                     args,
                     kwargs,
-                    include_execution_time=include_execution_time,
-                    execute_immediately=execute_immediately,
+                    priority=priority,
+                    blocking=blocking,
+                    immediate=immediate,
                 )
             )
             return function
 
         return decorator
+
+    def _schedule_tasks(self):
+        for schedule in self.schedules:
+            if schedule.ready:
+                task = schedule.task
+                task.event_loop = self
+
+                self.tasks.append(task)
+
+                if isinstance(schedule, Timeout):
+                    self.schedules.remove(schedule)
 
     def cancel(self, *task_ids: "list[int]"):
         """
@@ -227,38 +354,36 @@ class EventLoop:
         """
         self.tasks = [task for task in self.tasks if task.id not in task_ids]
 
-    def clear(self):
+    def loop(self, limit: int = None):
         """
-        Clear all tasks from event loop
-        """
-        self.tasks.clear()
-
-    def loop(self):
-        """
-        Execute all ready tasks and return
-        """
-        ready_tasks = (task for task in self.tasks if task.ready)
-
-        for task in ready_tasks:
-            _, completed = task.execute()
-
-            if completed and isinstance(task, Timeout):
-                self.tasks.remove(task)
-
-    def loop_forever(self, delay: float = None):
-        """
-        Loops forever, running pending tasks and listening for dispatched events
+        Call all pending tasks and return
 
         Args:
+            limit: Number of tasks to run before returning
+        """
+        self._schedule_tasks()
+        self.tasks.sort(reverse=True)
+
+        for task in self.tasks[:limit]:
+            task.call()
+
+        self.tasks = [task for task in self.tasks if not task.completed]
+
+    def loop_forever(self, limit: int = None, delay: float = None):
+        """
+        Loops forever, running pending tasks and scheduling new ones
+
+        Args:
+            limit: Number of tasks to run in each loop between scheduling new ones
             delay: Delay between each loop
         """
         while True:
             try:
-                self.loop()
+                self.loop(limit)
                 if delay:
                     sleep(delay)
             except KeyboardInterrupt:
                 break
 
     def __repr__(self) -> str:
-        return "EventLoop(tasks={})".format(self.tasks)
+        return "EventLoop(tasks={}, schedules={})".format(self.tasks, self.schedules)
