@@ -115,7 +115,7 @@ class _Schedule:
     _id_generator = IDGenerator()
     id: int
 
-    eta: float
+    eta: "float | None"
     ready: bool
 
     def __init__(
@@ -212,59 +212,95 @@ class Interval(_Schedule):
         )
 
 
-class EventLoop:
-    """
-    Class for managing tasks and executing them after timeout or in interval.
-    Allows running multiple functions in "parallel", without using threads.
+class Countdown(_Schedule):
+    class State:
+        WAITING = "waiting"
+        PAUSED = "paused"
+        COMPLETED = "completed"
 
-    Enables pausing function call and resuming it at later time, after processing
-    other tasks.
-    """
-
-    def __init__(self):
-        self.tasks: "list[Task]" = []
-        self.schedules: "list[_Schedule]" = []
-
-    def add_task(
+    def __init__(
         self,
         function: Callable,
-        *,
-        args: list = None,
-        kwargs: dict = None,
-        priority: int = 0,
-    ) -> Task:
-        """
-        Add task to event loop
-
-        Args:
-            function: Function to execute
-            args: Positional arguments to pass to function
-            kwargs: Keyword arguments to pass to function
-            priority: Priority of task
-        """
-
-        _task = Task(function, args, kwargs, priority=priority)
-        _task.event_loop = self
-
-        self.tasks.append(_task)
-
-        return _task
-
-    def add_timeout(
-        self,
-        function: Callable,
-        timeout: float,
-        *,
+        timer: float,
         args: list = None,
         kwargs: dict = None,
         priority: int = 0,
     ):
+        super().__init__(function, args, kwargs, priority=priority)
+
+        self._initial_timer = timer
+        self._time_to_run_at = monotonic() + timer
+        self.state = self.State.WAITING
+
+        self.resume()
+
+    @property
+    def eta(self):
+        if not self.state == self.State.WAITING:
+            return None
+        return max(0, self._time_to_run_at - monotonic())
+
+    @property
+    def ready(self):
+        if not self.state == self.State.WAITING:
+            return False
+        return self.eta == 0
+
+    def pause(self):
         """
-        Add timeout to event loop
+        Pause timer
+        """
+        if not self.state == self.State.WAITING:
+            return
+
+        self.state = self.State.PAUSED
+
+        self._timer = self._time_to_run_at - monotonic()
+        self._time_to_run_at = None
+
+    def resume(self):
+        """
+        Resume timer from paused state
+        """
+        if not self.state == self.State.PAUSED:
+            return
+
+        self.state = self.State.WAITING
+
+        self._time_to_run_at = monotonic() + self._timer
+        self._timer = None
+
+    def reset(self):
+        """
+        Reset timer to initial value and pause
+        """
+        self.state = self.State.PAUSED
+
+        self._timer = self._initial_timer
+        self._time_to_run_at = None
+
+    def restart(self):
+        """
+        Restart timer from initial value and start
+        """
+        self.reset()
+        self.resume()
+
+    @property
+    def task(self) -> Task:
+        self.state = self.State.COMPLETED
+        self._time_to_run_at = None
+        return super().task
+
+    def __repr__(self) -> str:
+        return "Countdown(id={}, eta={}, state={}, function={}, args={}, kwargs={})".format(
+            self.id, self.eta, self.state, self.function, self.args, self.kwargs
+        )
+
 
 class EventLoop:
     """
-    Class for managing tasks and executing them after timeout or in interval.
+    Class for managing tasks and calling them after timeout or in interval.
     Allows running multiple functions in "parallel", without using threads.
 
     Enables pausing function call and resuming it at later time, after processing
