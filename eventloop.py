@@ -118,6 +118,24 @@ class Task:
         )
 
 
+def delay(
+    *, miliseconds: int = 0, seconds: float, minutes: float = 0, hours: float = 0
+):
+    """
+    Allows to simulate a `time.sleep` call in a generator function,
+    without blocking the loop.
+
+    Example:
+    ```
+        yield from delay(minutes=1, seconds=1.5)
+    ```
+    """
+    total_seconds = (miliseconds / 1000) + seconds + (minutes * 60) + (hours * 3600)
+    unlock_time = monotonic() + total_seconds
+    while monotonic() < unlock_time:
+        yield
+
+
 class _Schedule:
     _id_generator = IDGenerator()
     id: int
