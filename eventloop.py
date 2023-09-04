@@ -125,6 +125,8 @@ class _Schedule:
     eta: "float | None"
     ready: bool
 
+    event_loop: "EventLoop | None" = None
+
     def __init__(
         self,
         function: "Callable",
@@ -324,67 +326,22 @@ class EventLoop:
         self.tasks: "list[Task]" = []
         self.schedules: "list[_Schedule]" = []
 
-    def timeout(
+    def add(
         self,
-        timeout: float,
-        *,
-        args: list = None,
-        kwargs: dict = None,
-        priority: int = 0,
-    ):
-        """
-        Decorator for adding function to event loop as timeout
+        *objects: "Task | _Schedule",
+    ) -> "list[Task | _Schedule]":
+        for object in objects:
+            object.event_loop = self
 
-        Args:
-            timeout: Timeout in seconds
-            args: Positional arguments to pass to function
-            kwargs: Keyword arguments to pass to function
-            priority: Priority of task
-        """
+            # Task
+            if isinstance(object, Task):
+                self.tasks.append(object)
 
-        def decorator(function: "Callable"):
-            self.schedules.append(Timeout(function, timeout, args, kwargs, priority))
-            return function
+            # Timeout, Interval, Countdown
+            elif isinstance(object, _Schedule):
+                self.schedules.append(object)
 
-        return decorator
-
-    def interval(
-        self,
-        interval: float,
-        *,
-        args: list = None,
-        kwargs: dict = None,
-        priority: int = 0,
-        blocking: bool = True,
-        immediate: bool = False,
-    ):
-        """
-        Decorator for adding function to event loop as interval
-
-        Args:
-            interval: Interval in seconds
-            args: Positional arguments to pass to function
-            kwargs: Keyword arguments to pass to function
-            priority: Priority of task
-            blocking: Whether to include call time in interval
-            immediate: Whether to call function immediately
-        """
-
-        def decorator(function: "Callable"):
-            self.schedules.append(
-                Interval(
-                    function,
-                    interval,
-                    args,
-                    kwargs,
-                    priority=priority,
-                    blocking=blocking,
-                    immediate=immediate,
-                )
-            )
-            return function
-
-        return decorator
+        return objects
 
     def _schedule_tasks(self):
         for schedule in self.schedules:
