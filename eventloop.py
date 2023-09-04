@@ -18,7 +18,7 @@ class Task:
     _id_generator = IDGenerator()
     id: int
 
-    function: Callable
+    function: "Callable"
     args: list
     kwargs: dict
 
@@ -29,7 +29,7 @@ class Task:
 
     def __init__(
         self,
-        function: Callable,
+        function: "Callable",
         args: list = None,
         kwargs: dict = None,
         *,
@@ -100,6 +100,9 @@ class Task:
 
         return other.priority < self.priority
 
+    def __lt__(self, other: "Task"):
+        return not self.__gt__(other)
+
     def __repr__(self) -> str:
         return "Task(id={}, priority={}, function={}, args={}, kwargs={}, time_created={})".format(
             self.id,
@@ -120,7 +123,7 @@ class _Schedule:
 
     def __init__(
         self,
-        function: Callable,
+        function: "Callable",
         args: list = None,
         kwargs: dict = None,
         priority: int = 0,
@@ -134,15 +137,15 @@ class _Schedule:
 
         self.time_created = monotonic()
 
-    @property
     def task(self) -> Task:
+        """Prepares a new task for scheduling"""
         return Task(self.function, self.args, self.kwargs, priority=self.priority)
 
 
 class Timeout(_Schedule):
     def __init__(
         self,
-        function: Callable,
+        function: "Callable",
         timeout: float,
         args: list = None,
         kwargs: dict = None,
@@ -168,7 +171,7 @@ class Timeout(_Schedule):
 class Interval(_Schedule):
     def __init__(
         self,
-        function: Callable,
+        function: "Callable",
         interval: float,
         args: list = None,
         kwargs: dict = None,
@@ -198,10 +201,9 @@ class Interval(_Schedule):
 
         return self.eta == 0
 
-    @property
     def task(self) -> Task:
         self.time_last_called = monotonic()
-        _task = super().task
+        _task = super().task()
         if self.blocking:
             self._blocking_task = _task
         return _task
@@ -220,7 +222,7 @@ class Countdown(_Schedule):
 
     def __init__(
         self,
-        function: Callable,
+        function: "Callable",
         timer: float,
         args: list = None,
         kwargs: dict = None,
@@ -286,11 +288,10 @@ class Countdown(_Schedule):
         self.reset()
         self.resume()
 
-    @property
     def task(self) -> Task:
         self.state = self.State.COMPLETED
         self._time_to_run_at = None
-        return super().task
+        return super().task()
 
     def __repr__(self) -> str:
         return "Countdown(id={}, eta={}, state={}, function={}, args={}, kwargs={})".format(
@@ -329,7 +330,7 @@ class EventLoop:
             priority: Priority of task
         """
 
-        def decorator(function: Callable):
+        def decorator(function: "Callable"):
             self.schedules.append(Timeout(function, timeout, args, kwargs, priority))
             return function
 
@@ -357,7 +358,7 @@ class EventLoop:
             immediate: Whether to call function immediately
         """
 
-        def decorator(function: Callable):
+        def decorator(function: "Callable"):
             self.schedules.append(
                 Interval(
                     function,
@@ -376,7 +377,7 @@ class EventLoop:
     def _schedule_tasks(self):
         for schedule in self.schedules:
             if schedule.ready:
-                task = schedule.task
+                task = schedule.task()
                 task.event_loop = self
 
                 self.tasks.append(task)
