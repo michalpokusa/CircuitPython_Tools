@@ -15,6 +15,10 @@ class IDGenerator:
 
 
 class Task:
+    """
+    Class for managing function calls and their priority.
+    """
+
     _id_generator = IDGenerator()
     id: int
 
@@ -52,7 +56,7 @@ class Task:
 
     def call(self):
         """
-        Calls a `function` with given `args` and `kwargs`, pauses on first yield if `function`
+        Calls a `function` with given `args` and `kwargs`, pauses on yields if `function`
         is a generator
         """
 
@@ -143,6 +147,10 @@ class _Schedule:
 
 
 class Timeout(_Schedule):
+    """
+    Class for scheduling a `Task` to be called after a timeout
+    """
+
     def __init__(
         self,
         function: "Callable",
@@ -169,6 +177,10 @@ class Timeout(_Schedule):
 
 
 class Interval(_Schedule):
+    """
+    Class for scheduling a `Task` to be called in an interval
+    """
+
     def __init__(
         self,
         function: "Callable",
