@@ -145,6 +145,9 @@ class _Schedule:
     _id_generator = IDGenerator()
     id: int
 
+    started: bool = False
+    time_started: float = None
+
     eta: "float | None"
     ready: bool
 
@@ -165,6 +168,11 @@ class _Schedule:
         self.priority = priority
 
         self.time_created = monotonic()
+
+    def start(self):
+        """Starts the schedule"""
+        self.started = True
+        self.time_started = monotonic()
 
     def task(self) -> Task:
         """Prepares a new task for scheduling"""
@@ -189,11 +197,11 @@ class Timeout(_Schedule):
 
     @property
     def eta(self):
-        return max(0, self.time_created + self.timeout - monotonic())
+        return max(0, self.time_started + self.timeout - monotonic())
 
     @property
     def ready(self):
-        return self.eta == 0
+        return self.started and self.eta == 0
 
     def __repr__(self) -> str:
         return "Timeout(id={}, eta={}, timeout={}, function={}, args={}, kwargs={})".format(
