@@ -113,29 +113,44 @@ class Task:
         return not self.__gt__(other)
 
     def __repr__(self) -> str:
-        return "Task(id={}, priority={}, function={}, args={}, kwargs={}, time_created={})".format(
-            self.id,
-            self.priority,
-            self.function,
-            self.args,
-            self.kwargs,
-            self.time_created,
+        return (
+            "Task("
+            f"id={self.id}, "
+            f"priority={self.priority}, "
+            f"function={self.function}, "
+            f"args={self.args}, "
+            f"kwargs={self.kwargs}, "
+            f"time_created={self.time_created}, "
+            f"tags={self.tags}"
+            ")"
         )
 
 
 def delay(
-    *, miliseconds: int = 0, seconds: float, minutes: float = 0, hours: float = 0
+    *, hours: float = 0, minutes: float = 0, seconds: float, miliseconds: int = 0
 ):
     """
-    Allows to simulate a `time.sleep` call in a generator function,
+    Allows to simulate a `time.sleep` or `asyncio.sleep` call in a generator function,
     without blocking the loop.
 
-    Example:
+    Examples:
     ```
-        yield from delay(minutes=1, seconds=1.5)
+        # Wait for 1.5s
+        yield from delay(seconds=1, miliseconds=500)
+        yield from delay(seconds=1.5)
+
+        # Wait for 1m30s
+        yield from delay(seconds=90)
+        yield from delay(minutes=1, seconds=30)
+        yield from delay(minutes=1.5)
+
+        # Wait for 1h30m45s
+        yield from delay(hours=1, minutes=30, seconds=45)
+        yield from delay(minutes=90, seconds=45)
+        yield from delay(minutes=90.75)
     ```
     """
-    total_seconds = (miliseconds / 1000) + seconds + (minutes * 60) + (hours * 3600)
+    total_seconds = (hours * 3600) + (minutes * 60) + seconds + (miliseconds / 1000)
     unlock_time = monotonic() + total_seconds
     while monotonic() < unlock_time:
         yield
