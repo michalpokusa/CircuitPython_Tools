@@ -4,6 +4,7 @@ except ImportError:
     pass
 
 from time import monotonic, sleep
+from traceback import print_exception
 
 
 class IDGenerator:
@@ -65,13 +66,17 @@ class Task:
             try:
                 # In progess, continue until next yield
                 next(self._current_call)
-            except StopIteration:
-                # Completed
+                return
+            except Exception as error:
+                # Completed or error
                 self._current_call = None
                 self.completed = True
                 self.time_completed = monotonic()
-            finally:
-                return
+
+                if isinstance(error, StopIteration):
+                    return
+                else:
+                    raise error
 
         # Function call is not in progress, start it
         self.started = True
@@ -414,6 +419,8 @@ class EventLoop:
             except Exception as error:
                 if raise_errors:
                     raise error
+                else:
+                    print_exception(error)
 
     def __repr__(self) -> str:
         return "EventLoop(tasks={}, schedules={})".format(self.tasks, self.schedules)
