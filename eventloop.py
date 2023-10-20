@@ -28,6 +28,7 @@ class Task:
     kwargs: dict
 
     priority: int
+    tags: "list[str]"
 
     event_loop: "EventLoop | None" = None
     _current_call: "Generator | None" = None
@@ -39,6 +40,7 @@ class Task:
         kwargs: dict = None,
         *,
         priority: int = 0,
+        tags: "list[str]" = None,
     ) -> None:
         self.id = self._id_generator()
 
@@ -47,6 +49,7 @@ class Task:
         self.kwargs = kwargs or {}
 
         self.priority = priority
+        self.tags = tags or []
 
         self.time_created = monotonic()
         self.time_started = None
@@ -156,209 +159,6 @@ def delay(
         yield
 
 
-class _Schedule:
-    _id_generator = IDGenerator()
-    id: int
-
-    started: bool = False
-    time_started: float = None
-
-    eta: "float | None"
-    ready: bool
-
-    event_loop: "EventLoop | None" = None
-
-    def __init__(
-        self,
-        function: "Callable",
-        args: list = None,
-        kwargs: dict = None,
-        priority: int = 0,
-    ):
-        self.id = _Schedule._id_generator()
-
-        self.function = function
-        self.args = args or []
-        self.kwargs = kwargs or {}
-        self.priority = priority
-
-        self.time_created = monotonic()
-
-    def start(self):
-        """Starts the schedule"""
-        self.started = True
-        self.time_started = monotonic()
-
-    def task(self) -> Task:
-        """Prepares a new task for scheduling"""
-        return Task(self.function, self.args, self.kwargs, priority=self.priority)
-
-
-class Timeout(_Schedule):
-    """
-    Class for scheduling a `Task` to be called after a timeout
-    """
-
-    def __init__(
-        self,
-        function: "Callable",
-        timeout: float,
-        args: list = None,
-        kwargs: dict = None,
-        priority: int = 0,
-    ):
-        super().__init__(function, args, kwargs, priority=priority)
-        self.timeout = timeout
-
-    @property
-    def eta(self):
-        return max(0, self.time_started + self.timeout - monotonic())
-
-    @property
-    def ready(self):
-        return self.started and self.eta == 0
-
-    def __repr__(self) -> str:
-        return "Timeout(id={}, eta={}, timeout={}, function={}, args={}, kwargs={})".format(
-            self.id, self.eta, self.timeout, self.function, self.args, self.kwargs
-        )
-
-
-class Interval(_Schedule):
-    """
-    Class for scheduling a `Task` to be called in an interval
-    """
-
-    def __init__(
-        self,
-        function: "Callable",
-        interval: float,
-        args: list = None,
-        kwargs: dict = None,
-        priority: int = 0,
-        *,
-        blocking: bool = False,
-        immediate: bool = False,
-    ):
-        super().__init__(function, args, kwargs, priority=priority)
-
-        self.interval = interval
-        self.blocking = blocking
-        self._blocking_task: "Task | None" = None
-        self.time_last_called = None if immediate else self.time_created
-
-    @property
-    def eta(self):
-        return max(0, (self.time_last_called or 0) + self.interval - monotonic())
-
-    @property
-    def ready(self):
-        if self.blocking and self._blocking_task:
-            if not self._blocking_task.completed:
-                return False
-            self.time_last_called = self._blocking_task.time_completed
-            self._blocking_task = None
-
-        return self.eta == 0
-
-    def task(self) -> Task:
-        self.time_last_called = monotonic()
-        _task = super().task()
-        if self.blocking:
-            self._blocking_task = _task
-        return _task
-
-    def __repr__(self) -> str:
-        return "Interval(id={}, eta={}, interval={}, function={}, args={}, kwargs={})".format(
-            self.id, self.eta, self.interval, self.function, self.args, self.kwargs
-        )
-
-
-class Countdown(_Schedule):
-    class State:
-        WAITING = "waiting"
-        PAUSED = "paused"
-        COMPLETED = "completed"
-
-    def __init__(
-        self,
-        function: "Callable",
-        timer: float,
-        args: list = None,
-        kwargs: dict = None,
-        priority: int = 0,
-    ):
-        super().__init__(function, args, kwargs, priority=priority)
-
-        self._initial_timer = timer
-        self._time_to_run_at = monotonic() + timer
-        self.state = self.State.WAITING
-
-        self.resume()
-
-    @property
-    def eta(self):
-        if not self.state == self.State.WAITING:
-            return None
-        return max(0, self._time_to_run_at - monotonic())
-
-    @property
-    def ready(self):
-        if not self.state == self.State.WAITING:
-            return False
-        return self.eta == 0
-
-    def pause(self):
-        """
-        Pause timer
-        """
-        if not self.state == self.State.WAITING:
-            return
-
-        self.state = self.State.PAUSED
-
-        self._timer = self._time_to_run_at - monotonic()
-        self._time_to_run_at = None
-
-    def resume(self):
-        """
-        Resume timer from paused state
-        """
-        if not self.state == self.State.PAUSED:
-            return
-
-        self.state = self.State.WAITING
-
-        self._time_to_run_at = monotonic() + self._timer
-        self._timer = None
-
-    def reset(self):
-        """
-        Reset timer to initial value and pause
-        """
-        self.state = self.State.PAUSED
-
-        self._timer = self._initial_timer
-        self._time_to_run_at = None
-
-    def restart(self):
-        """
-        Restart timer from initial value and start
-        """
-        self.reset()
-        self.resume()
-
-    def task(self) -> Task:
-        self.state = self.State.COMPLETED
-        self._time_to_run_at = None
-        return super().task()
-
-    def __repr__(self) -> str:
-        return "Countdown(id={}, eta={}, state={}, function={}, args={}, kwargs={})".format(
-            self.id, self.eta, self.state, self.function, self.args, self.kwargs
-        )
-
-
 class EventLoop:
     """
     Class for managing tasks and calling them after timeout or in interval.
@@ -370,41 +170,39 @@ class EventLoop:
 
     def __init__(self):
         self.tasks: "list[Task]" = []
-        self.schedules: "list[_Schedule]" = []
 
     def add(
         self,
-        *objects: "Task | _Schedule",
-    ) -> "list[Task | _Schedule]":
-        for object in objects:
-            object.event_loop = self
+        *tasks: "Task",
+    ) -> "list[Task]":
+        for task in tasks:
+            task.event_loop = self
 
-            # Task
-            if isinstance(object, Task):
-                self.tasks.append(object)
+        self.tasks.extend(tasks)
 
-            # Timeout, Interval, Countdown
-            elif isinstance(object, _Schedule):
-                self.schedules.append(object)
+        return tasks
 
-        return objects
-
-    def _schedule_tasks(self):
-        for schedule in self.schedules:
-            if schedule.ready:
-                task = schedule.task()
-                task.event_loop = self
-
-                self.tasks.append(task)
-
-                if isinstance(schedule, Timeout):
-                    self.schedules.remove(schedule)
-
-    def cancel(self, *task_ids: "list[int]"):
+    def cancel(self, ids: "list[int]" = None, tags: "list[str | list[str]]" = None):
         """
         Cancel tasks and remove them from event loop
         """
-        self.tasks = [task for task in self.tasks if task.id not in task_ids]
+
+        # Based on ids
+        if ids:
+            self.tasks = [task for task in self.tasks if task.id not in ids]
+
+        # Based on tags
+        if tags:
+            for tag_group in tags:
+                tag_group = (
+                    {tag_group} if isinstance(tag_group, str) else set(tag_group)
+                )
+
+                self.tasks = [
+                    task
+                    for task in self.tasks
+                    if not tag_group.issubset(set(task.tags))
+                ]
 
     def loop(self, limit: int = None):
         """
@@ -413,7 +211,6 @@ class EventLoop:
         Args:
             limit: Number of tasks to run before returning
         """
-        self._schedule_tasks()
         self.tasks.sort(reverse=True)
 
         for task in self.tasks[:limit]:
@@ -446,4 +243,4 @@ class EventLoop:
                     print_exception(error)
 
     def __repr__(self) -> str:
-        return "EventLoop(tasks={}, schedules={})".format(self.tasks, self.schedules)
+        return f"EventLoop(tasks={self.tasks})"
