@@ -29,9 +29,22 @@ class Task:
 
     priority: int
     tags: "list[str]"
+    delay: "float | None"
+    timeout: "float | None"
+    interval: "float | None"
 
     event_loop: "EventLoop | None" = None
     _current_call: "Generator | None" = None
+
+    @staticmethod
+    def _interval_function(function: "Callable", interval: float):
+        def intervaled_function(*args, **kwargs):
+            while True:
+                function(*args, **kwargs)
+
+                yield from sync_delay(seconds=interval)
+
+        return intervaled_function
 
     def __init__(
         self,
@@ -41,6 +54,9 @@ class Task:
         *,
         priority: int = 0,
         tags: "list[str]" = None,
+        delay: float = None,
+        timeout: float = None,
+        interval: float = None,
     ) -> None:
         self.id = self._id_generator()
 
@@ -50,6 +66,12 @@ class Task:
 
         self.priority = priority
         self.tags = tags or []
+        self.delay = delay
+        self.timeout = timeout
+        self.interval = interval
+
+        if interval:
+            self.function = self._interval_function(self.function, interval)
 
         self.time_created = monotonic()
         self.time_started = None
@@ -64,8 +86,20 @@ class Task:
         is a generator
         """
 
+        # Function call is delayed
+        if self.delay and not self.started:
+            if monotonic() < self.time_created + self.delay:
+                return
+
         # Function call is already in progress
         if self._current_call is not None:
+            # Timed out
+            if self.timeout and self.time_started + self.timeout < monotonic():
+                self._current_call = None
+                self.completed = True
+                self.time_completed = monotonic()
+                return
+
             try:
                 # In progess, continue until next yield
                 next(self._current_call)
@@ -92,6 +126,7 @@ class Task:
             self.call()
         # Function is not a generator, call is completed
         else:
+            self._current_call = None
             self.completed = True
             self.time_completed = monotonic()
 
