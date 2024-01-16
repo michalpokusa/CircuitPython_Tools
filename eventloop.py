@@ -3,6 +3,7 @@ try:
 except ImportError:
     pass
 
+from sys import exit as sys_exit
 from time import monotonic, sleep
 from traceback import print_exception
 
@@ -57,6 +58,7 @@ class Task:
         delay: float = None,
         timeout: float = None,
         interval: float = None,
+        bind: bool = False,
     ) -> None:
         self.id = self._id_generator()
 
@@ -73,12 +75,16 @@ class Task:
         if interval:
             self.function = self._interval_function(self.function, interval)
 
+        self.bind = bind
+
         self.time_created = monotonic()
         self.time_started = None
         self.time_completed = None
 
         self.started = False
         self.completed = False
+        self.timed_out = False
+        self.errored = False
 
     def call(self):
         """
@@ -98,6 +104,7 @@ class Task:
                 self._current_call = None
                 self.completed = True
                 self.time_completed = monotonic()
+                self.timed_out = True
                 return
 
             try:
@@ -113,12 +120,18 @@ class Task:
                 if isinstance(error, StopIteration):
                     return
                 else:
+                    self.errored = True
                     raise error
 
         # Function call is not in progress, start it
         self.started = True
         self.time_started = monotonic()
-        call = self.function(*self.args, **self.kwargs)
+
+        call = (
+            self.function(self, *self.args, **self.kwargs)
+            if self.bind
+            else self.function(*self.args, **self.kwargs)
+        )
 
         # Function is a generator, call will be handled in fragments
         if hasattr(call, "__next__"):
@@ -130,22 +143,42 @@ class Task:
             self.completed = True
             self.time_completed = monotonic()
 
+    @property
+    def completed_successfully(self) -> bool:
+        """
+        Returns whether the task has been completed successfully, without errors or timeouts
+        """
+        return self.completed and not self.errored and not self.timed_out
+
+    @property
+    def elapsed_time(self) -> float:
+        if not self.started:
+            return 0
+
+        if self.completed:
+            return self.time_completed - self.time_started
+
+        return monotonic() - self.time_started
+
     def __eq__(self, value: "Task") -> bool:
         if not isinstance(value, Task):
             raise ValueError(f"Cannot compare {type(self)} with {type(value)}")
 
         return (
-            self.priority == value.priority and self.time_created == value.time_created
+            self.priority == value.priority  # Has same priority
+            and self.time_created == value.time_created  # Has same creation time
+            and self.id == value.id  # Has same id
         )
 
     def __gt__(self, other: "Task"):
         if not isinstance(other, Task):
             raise ValueError(f"Cannot compare {type(self)} with {type(other)}")
 
-        if self.priority == other.priority:
-            return self.time_created < other.time_created
-
-        return other.priority < self.priority
+        return (
+            self.priority > other.priority  # Has higher priority
+            or self.time_created < other.time_created  # Has been created earlier
+            or self.id < other.id  # Has lower id, so it was instantiated earlier
+        )
 
     def __lt__(self, other: "Task"):
         return not self.__gt__(other)
@@ -153,45 +186,89 @@ class Task:
     def __repr__(self) -> str:
         return (
             "Task("
-            f"id={self.id}, "
-            f"priority={self.priority}, "
-            f"function={self.function}, "
-            f"args={self.args}, "
-            f"kwargs={self.kwargs}, "
-            f"time_created={self.time_created}, "
-            f"tags={self.tags}"
-            ")"
+            + f"id={self.id}"
+            + f", priority={self.priority}"
+            + f", tags={self.tags}"
+            + f", delay={self.delay}"
+            + f", timeout={self.timeout}"
+            + f", interval={self.interval}"
+            + f", bind={self.bind}"
+            + f", function={self.function}"
+            + f", args={self.args}"
+            + f", kwargs={self.kwargs}"
+            + ")"
         )
 
 
-def delay(
-    *, hours: float = 0, minutes: float = 0, seconds: float, miliseconds: int = 0
+def sync_delay(
+    *, hours: float = 0, minutes: float = 0, seconds: float = 0, miliseconds: int = 0
 ):
     """
     Allows to simulate a `time.sleep` or `asyncio.sleep` call in a generator function,
     without blocking the loop.
 
+    Always pauses for at least the given time, but may pause for longer if other tasks are
+    running in the meantime.
+
     Examples:
     ```
-        # Wait for 1.5s
-        yield from delay(seconds=1, miliseconds=500)
-        yield from delay(seconds=1.5)
-
-        # Wait for 1m30s
-        yield from delay(seconds=90)
-        yield from delay(minutes=1, seconds=30)
-        yield from delay(minutes=1.5)
-
-        # Wait for 1h30m45s
-        yield from delay(hours=1, minutes=30, seconds=45)
-        yield from delay(minutes=90, seconds=45)
-        yield from delay(minutes=90.75)
+        yield from sync_delay(minutes=1.5)
+        yield from sync_delay(hours=1, minutes=30, seconds=45)
     ```
     """
     total_seconds = (hours * 3600) + (minutes * 60) + seconds + (miliseconds / 1000)
     unlock_time = monotonic() + total_seconds
+
+    should_yield_at_least_once = True
+
     while monotonic() < unlock_time:
         yield
+        should_yield_at_least_once = False
+
+    if should_yield_at_least_once:
+        yield
+
+
+class async_delay:
+    """
+    Allows to simulate a `time.sleep` or `asyncio.sleep` call in a generator function,
+    without blocking the loop.
+
+    Pauses for the minimum time required to retain the interval between calls.
+
+    Examples:
+    ```
+        delay = async_delay(hours=1, minutes=30, seconds=45)
+
+        yield from delay
+    ```
+    """
+
+    def __init__(
+        self,
+        *,
+        hours: float = 0,
+        minutes: float = 0,
+        seconds: float = 0,
+        miliseconds: int = 0,
+    ):
+        self._total_seconds = (
+            (hours * 3600) + (minutes * 60) + seconds + (miliseconds / 1000)
+        )
+        self._unlock_time = monotonic() + self._total_seconds
+
+        self._should_yield_at_least_once = True
+
+    def __iter__(self):
+        while monotonic() < self._unlock_time:
+            yield
+            self._should_yield_at_least_once = False
+
+        if self._should_yield_at_least_once:
+            yield
+
+        missed_unlocks = (monotonic() - self._unlock_time) // self._total_seconds
+        self._unlock_time += self._total_seconds * (missed_unlocks + 1)
 
 
 class EventLoop:
@@ -206,10 +283,7 @@ class EventLoop:
     def __init__(self):
         self.tasks: "list[Task]" = []
 
-    def add(
-        self,
-        *tasks: "Task",
-    ) -> "list[Task]":
+    def add(self, *tasks: "Task") -> "list[Task]":
         for task in tasks:
             task.event_loop = self
 
@@ -217,10 +291,19 @@ class EventLoop:
 
         return tasks
 
-    def cancel(self, ids: "list[int]" = None, tags: "list[str | list[str]]" = None):
+    def cancel(
+        self,
+        *tasks: "Task",
+        ids: "list[int]" = None,
+        tags: "list[str | list[str]]" = None,
+    ):
         """
         Cancel tasks and remove them from event loop
         """
+
+        # Explicit tasks
+        if tasks:
+            self.tasks = [task for task in self.tasks if task not in tasks]
 
         # Based on ids
         if ids:
@@ -239,36 +322,41 @@ class EventLoop:
                     if not tag_group.issubset(set(task.tags))
                 ]
 
-    def loop(self, limit: int = None):
+    def loop(self, *, sort_before_calling: bool = False):
         """
         Call all pending tasks and return
 
         Args:
-            limit: Number of tasks to run before returning
+            sort_before_calling: Whether to sort tasks before calling them
         """
-        self.tasks.sort(reverse=True)
-
-        for task in self.tasks[:limit]:
-            task.call()
-
         self.tasks = [task for task in self.tasks if not task.completed]
 
+        if sort_before_calling:
+            self.tasks.sort(reverse=True)
+
+        for task in self.tasks:
+            task.call()
+
     def loop_forever(
-        self, limit: int = None, delay: float = None, raise_errors: bool = True
+        self,
+        *,
+        time_between_loops: float = None,
+        raise_errors: bool = True,
+        sys_exit_after: bool = True,
     ):
         """
         Loops forever, running pending tasks and scheduling new ones
 
         Args:
-            limit: Number of tasks to run in each loop between scheduling new ones
-            delay: Delay between each loop
+            time_between_loops: Time between each loop
             raise_errors: Whether to raise errors or not
+            sys_exit_after: Exits program after loop ends
         """
         while True:
             try:
-                self.loop(limit)
-                if delay:
-                    sleep(delay)
+                self.loop()
+                if time_between_loops:
+                    sleep(time_between_loops)
             except KeyboardInterrupt:
                 break
             except Exception as error:
@@ -277,5 +365,35 @@ class EventLoop:
                 else:
                     print_exception(error)
 
+        if sys_exit_after:
+            sys_exit()
+
     def __repr__(self) -> str:
         return f"EventLoop(tasks={self.tasks})"
+
+
+class DebugEventLoop(EventLoop):
+    def __init__(self):
+        super().__init__()
+
+        self.counted_loops = 0
+        self.time_started_counting = monotonic()
+
+    def loop(self, *, sort_before_calling: bool = False):
+        super().loop(sort_before_calling=sort_before_calling)
+
+        self.counted_loops += 1
+
+    @property
+    def loops_per_second(self) -> float:
+        """
+        Returns average number of loops per second
+        """
+        return self.counted_loops / (monotonic() - self.time_started_counting)
+
+    def reset_loops_per_second(self):
+        """
+        Resets loops per second counter
+        """
+        self.counted_loops = 0
+        self.time_started_counting = monotonic()
