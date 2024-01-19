@@ -30,9 +30,9 @@ class Task:
 
     priority: int
     tags: "list[str]"
+    interval: "float | None"
     delay: "float | None"
     timeout: "float | None"
-    interval: "float | None"
 
     event_loop: "EventLoop | None" = None
     _current_call: "Generator | None" = None
@@ -47,6 +47,14 @@ class Task:
 
         return intervaled_function
 
+    @staticmethod
+    def _delay_function(function: "Callable", delay: float):
+        def delayed_function(*args, **kwargs):
+            yield from sync_delay(seconds=delay)
+            function(*args, **kwargs)
+
+        return delayed_function
+
     def __init__(
         self,
         function: "Callable",
@@ -55,9 +63,9 @@ class Task:
         *,
         priority: int = 0,
         tags: "list[str]" = None,
+        interval: float = None,
         delay: float = None,
         timeout: float = None,
-        interval: float = None,
         bind: bool = False,
     ) -> None:
         self.id = self._id_generator()
@@ -68,13 +76,16 @@ class Task:
 
         self.priority = priority
         self.tags = tags or []
-        self.delay = delay
-        self.timeout = timeout
         self.interval = interval
+        self.delay = delay
 
         if interval:
             self.function = self._interval_function(self.function, interval)
 
+        if delay:
+            self.function = self._delay_function(self.function, delay)
+
+        self.timeout = timeout
         self.bind = bind
 
         self.time_created = monotonic()
@@ -91,11 +102,6 @@ class Task:
         Calls a `function` with given `args` and `kwargs`, pauses on yields if `function`
         is a generator
         """
-
-        # Function call is delayed
-        if self.delay and not self.started:
-            if monotonic() < self.time_created + self.delay:
-                return
 
         # Function call is already in progress
         if self._current_call is not None:
@@ -189,9 +195,9 @@ class Task:
             + f"id={self.id}"
             + f", priority={self.priority}"
             + f", tags={self.tags}"
+            + f", interval={self.interval}"
             + f", delay={self.delay}"
             + f", timeout={self.timeout}"
-            + f", interval={self.interval}"
             + f", bind={self.bind}"
             + f", function={self.function}"
             + f", args={self.args}"
