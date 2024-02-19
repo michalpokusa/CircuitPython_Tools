@@ -28,7 +28,6 @@ class Task:
     args: list
     kwargs: dict
 
-    priority: int
     tags: "list[str]"
     interval: "float | None"
     delay: "float | None"
@@ -61,7 +60,6 @@ class Task:
         args: list = None,
         kwargs: dict = None,
         *,
-        priority: int = 0,
         tags: "list[str]" = None,
         interval: float = None,
         delay: float = None,
@@ -74,7 +72,6 @@ class Task:
         self.args = args or []
         self.kwargs = kwargs or {}
 
-        self.priority = priority
         self.tags = tags or []
         self.interval = interval
         self.delay = delay
@@ -171,8 +168,7 @@ class Task:
             raise ValueError(f"Cannot compare {type(self)} with {type(value)}")
 
         return (
-            self.priority == value.priority  # Has same priority
-            and self.time_created == value.time_created  # Has same creation time
+            self.time_created == value.time_created  # Has same creation time
             and self.id == value.id  # Has same id
         )
 
@@ -181,8 +177,7 @@ class Task:
             raise ValueError(f"Cannot compare {type(self)} with {type(other)}")
 
         return (
-            self.priority > other.priority  # Has higher priority
-            or self.time_created < other.time_created  # Has been created earlier
+            self.time_created < other.time_created  # Has been created earlier
             or self.id < other.id  # Has lower id, so it was instantiated earlier
         )
 
@@ -193,7 +188,6 @@ class Task:
         return (
             "Task("
             + f"id={self.id}"
-            + f", priority={self.priority}"
             + f", tags={self.tags}"
             + f", interval={self.interval}"
             + f", delay={self.delay}"
