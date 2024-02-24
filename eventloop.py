@@ -94,7 +94,7 @@ class Task:
         self.timed_out = False
         self.errored = False
 
-    def call(self):
+    def progress(self):
         """
         Calls a `function` with given `args` and `kwargs`, pauses on yields if `function`
         is a generator
@@ -186,17 +186,16 @@ class Task:
 
     def __repr__(self) -> str:
         return (
-            "Task("
+            f"<{self.__class__.__name__} "
             + f"id={self.id}"
             + f", tags={self.tags}"
             + f", interval={self.interval}"
             + f", delay={self.delay}"
             + f", timeout={self.timeout}"
             + f", bind={self.bind}"
-            + f", function={self.function}"
             + f", args={self.args}"
             + f", kwargs={self.kwargs}"
-            + ")"
+            + ">"
         )
 
 
@@ -335,7 +334,7 @@ class EventLoop:
             self.tasks.sort(reverse=True)
 
         for task in self.tasks:
-            task.call()
+            task.progress()
 
     def loop_forever(
         self,
@@ -343,6 +342,7 @@ class EventLoop:
         time_between_loops: float = None,
         raise_errors: bool = True,
         sys_exit_after: bool = True,
+        stop_when_no_tasks: bool = False,
     ):
         """
         Loops forever, running pending tasks and scheduling new ones
@@ -351,8 +351,9 @@ class EventLoop:
             time_between_loops: Time between each loop
             raise_errors: Whether to raise errors or not
             sys_exit_after: Exits program after loop ends
+            stop_when_no_tasks: Stop loop when there are no tasks left
         """
-        while True:
+        while self.tasks or not stop_when_no_tasks:
             try:
                 self.loop()
                 if time_between_loops:
@@ -369,15 +370,21 @@ class EventLoop:
             sys_exit()
 
     def __repr__(self) -> str:
-        return f"EventLoop(tasks={self.tasks})"
+        return f"<{self.__class__.__name__} tasks={self.tasks}>"
 
 
 class DebugEventLoop(EventLoop):
+    def _print_loops_per_second(self):
+        print(f"Loops per second: {self.loops_per_second}")
+        self.reset_loops_per_second()
+
     def __init__(self):
         super().__init__()
 
         self.counted_loops = 0
         self.time_started_counting = monotonic()
+
+        self.add(Task(self._print_loops_per_second, interval=5))
 
     def loop(self, *, sort_before_calling: bool = False):
         super().loop(sort_before_calling=sort_before_calling)
